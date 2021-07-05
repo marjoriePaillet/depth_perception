@@ -15,7 +15,7 @@ from reachy_sdk.trajectory.interpolation import InterpolationMode
 from scipy.spatial.transform import Rotation as Rot
 import pyzbar.pyzbar as pyzbar
 
-# reachy = ReachySDK(host='localhost')
+reachy = ReachySDK(host='localhost')
 stepSize = 0.005
 newConfig = False
 
@@ -46,7 +46,10 @@ monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
 monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
 stereo.setConfidenceThreshold(250)
 
-stereo.setLeftRightCheck(False)
+stereo.setLeftRightCheck(True)
+# stereo.setRectifyMirrorFrame(True)
+# stereo.setDepthAlign(dai.StereoDepthProperties.DepthAlign.RECTIFIED_RIGHT)
+# stereo.setDepthAlign(dai.CameraBoardSocket.RIGHT)
 stereo.setSubpixel(False)
 stereo.setExtendedDisparity(False)# Config
 
@@ -66,50 +69,51 @@ spatialLocationCalculator.passthroughDepth.link(xoutDepth.input)
 stereo.depth.link(spatialLocationCalculator.inputDepth)
 spatialLocationCalculator.out.link(xoutSpatialData.input)
 xinSpatialCalcConfig.out.link(spatialLocationCalculator.inputConfig)
-monoRight.out.link(xoutBw.input)
+# monoRight.out.link(xoutBw.input)
+stereo.rectifiedRight.link(xoutBw.input)
 
 monoHFOV = 83
 
 depthWidth = 1280
 Start = False
+rec = False
 
 class move (threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
+        print('start')
 
     def run(self):
-        reachy = ReachySDK(host='localhost')
-        time.sleep(0.5)
-        recorded_joints = [
-            reachy.l_arm.l_shoulder_pitch,
-            reachy.l_arm.l_shoulder_roll,
-            reachy.l_arm.l_arm_yaw,
-            reachy.l_arm.l_elbow_pitch,
-            reachy.l_arm.l_forearm_yaw,
-            reachy.l_arm.l_wrist_pitch,
-            reachy.l_arm.l_wrist_roll,
-        ]
-        trajectories = [[-2, 2.53, -34.86, -70.02, -1.91, -13.23, -10.12, 54.33], [-23.98, 1.3, -36.7, -52.97, -13.93, -16.57, -28.89, 54.33], [-28.72, -12.77, -53.23, -50.13, -4.55, -16.31, -19.21, 54.91], [-18.35, -4.24, -61.32, -65.27, 11.88, -6.64, -30.94, 54.33]]
-        A_point = dict(zip(recorded_joints, trajectories[0]))
-        B_point = dict(zip(recorded_joints, trajectories[1]))
-        C_point = dict(zip(recorded_joints, trajectories[2]))
-        D_point = dict(zip(recorded_joints, trajectories[3]))
-        # Goes to the start of the trajectory in 3s
-        reachy.turn_on('l_arm')
+        global reachy, rec
+        print('run')
+        time.sleep(1)
+        # recorded_joints = [
+        #     reachy.r_arm.r_shoulder_pitch,
+        #     reachy.r_arm.r_shoulder_roll,
+        #     reachy.r_arm.r_arm_yaw,
+        #     reachy.r_arm.r_elbow_pitch,
+        #     reachy.r_arm.r_forearm_yaw,
+        #     reachy.r_arm.r_wrist_pitch,
+        #     reachy.r_arm.r_wrist_roll,
+        # ]
+        # trajectories = [[-8.86, -2.70, 33.10, -76.09, -3.37, -16.31, 49.12, -9.46], [-14.75, 16.90, 48.66, -69.67, -4.55, -0.66, 38.27, -1.03]]
+        # A_point = dict(zip(recorded_joints, trajectories[0]))
+        # B_point = dict(zip(recorded_joints, trajectories[1]))
 
-        goto(A_point, duration=2.0)
-        time.sleep(0.5)
-        goto(B_point, duration=2.0)
-        time.sleep(0.5)
-        goto(C_point, duration=2.0)
-        time.sleep(0.5)
-        goto(D_point, duration=2.0)
-        time.sleep(0.5)
+        # # Goes to the start of the trajectory in 3s
+        # reachy.turn_on('r_arm')
 
-        reachy.turn_off_smoothly('l_arm')   
+        # goto(A_point, duration=1.0,  interpolation_mode=InterpolationMode.LINEAR)
+        # rec = True
+        # time.sleep(2)
+        # goto(B_point, duration=1.0, interpolation_mode=InterpolationMode.LINEAR)
+        # time.sleep(2)
+        # rec = False
 
-def calc_angle(offset):
-    return math.atan(math.tan( monoHFOV/ 2.0) * offset / (depthWidth / 2.0))
+        # reachy.turn_off_smoothly('r_arm')   
+
+def calc_angle(offset, fov, depth):
+    return math.atan(math.tan( fov/ 2.0) * offset / (depth / 2.0))
 
 
 # def decode(im) :
@@ -123,41 +127,53 @@ def calc_angle(offset):
 
 #   return decodedObjects
 
-def compute_z (im, decodedObject):
-    points = decodedObject.polygon
-    if len(points) > 4 :
-            hull = cv2.convexHull(np.array([point for point in points], dtype=np.float32))
-            hull = list(map(tuple, np.squeeze(hull)))
-    else :
-        hull = points
+def compute_z (im, center, r):
 
-    n = len(hull)
-        
-    hull = np.array(hull)
+    xmin = int(center[0]-r)-10 
+    ymin = int(center[1]-r)-10
+    xmax = int(center[0]+r)+10
+    ymax = int(center[1]+r)+10
 
-    xmin = min(hull[:, 0])
-    ymin = min(hull[:, 1])
-    xmax = max(hull[:, 0])
-    ymax = max(hull[:, 1])
-
-    roi = im[int(ymin)-1:int(ymax)+1, int(xmin)-1:int(xmax)+1]
-
-    mask = np.zeros(roi.shape[:2], dtype="uint8")
-    pts = np.array([[hull[0][0]-xmin,hull[0][1]-ymin], [hull[1][0]-xmin,hull[1][1]-ymin], [hull[2][0]-xmin,hull[2][1]-ymin], [hull[3][0]-xmin,hull[3][1]-ymin]], np.int32)
-    pts = pts.reshape((-1,1,2))
-    cv2.fillPoly(mask, [pts],(255, 255, 255))
-
-    masked = cv2.bitwise_and(roi, roi, mask=mask)
+    roi = im[int(ymin):int(ymax), int(xmin):int(xmax)]
+    
     # print(list(masked))
-    flatMask = masked.flatten()
-    result = list(filter(lambda val: val !=  0, list(flatMask)))
+    flatRoi = roi.flatten()
+    result = list(filter(lambda val: val !=  0, list(flatRoi)))
 
-    z = np.mean(np.array(result))
+    z = np.median(np.array(result))
+    # z = np.median(roi)
     # print(z)
 
-    # cv2.imshow("masked", masked)
+    # cv2.imshow("masked", roi)
 
-    return z, hull
+    return z, [xmin, ymin, xmax, ymax]
+
+# Setup SimpleBlobDetector parameters.
+params = cv2.SimpleBlobDetector_Params()
+
+# Change thresholds
+params.minThreshold = 20
+params.maxThreshold = 150
+
+# Filter by Area.
+params.filterByArea = True
+params.minArea = 120
+params.maxArea = 400
+
+# Filter by Circularity
+params.filterByCircularity = True
+params.minCircularity = 0.5
+
+# Filter by Convexity
+params.filterByConvexity = True
+params.minConvexity = 0.87
+
+# Filter by Inertia
+params.filterByInertia = True
+params.minInertiaRatio = 0.2
+
+# Create a detector with the parameters
+detector = cv2.SimpleBlobDetector_create(params)
 
 
 with dai.Device(pipeline) as device:    # Output queue will be used to get the depth frames from the outputs defined above
@@ -181,65 +197,64 @@ with dai.Device(pipeline) as device:    # Output queue will be used to get the d
         inBw = qBw.get()
         depthFrame = inDepth.getFrame()
         bwFrame = inBw.getCvFrame()
-        # print(type(depthFrame))
         
-        ret, depthFrame = cv2.threshold(depthFrame, 470, 0, cv2.THRESH_TOZERO_INV)
-        # print(depthFrame)
-        # print(type(depthFrame))
-        # depthFrameTemp = depthFrame.copy()
+        # ret, depthFrame = cv2.threshold(depthFrame, 470, 0, cv2.THRESH_TOZERO_INV)
+        
         depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
         depthFrameColor = cv2.equalizeHist(depthFrameColor)
         depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)        
         # spatialData = spatialCalcQueue.get().getSpatialLocations()
 
+        # Detect blobs
+        keypoints = detector.detect(bwFrame)
+        
+        # bwFrame = cv2.drawKeypoints(bwFrame, keypoints, np.array([]), (0,0,255), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+        # depthFrameColor = cv2.drawKeypoints(depthFrameColor, keypoints, np.array([]), (255,0,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
 
-        decodedObjects = pyzbar.decode(bwFrame)
-        if len(decodedObjects) > 0:
-            for dObject in decodedObjects:
-                z, hull = compute_z(depthFrame, dObject)
-                xmin = int(hull[0][0])
-                ymin = int(hull[0][1])
-                xmax = int(hull[2][0])
-                ymax = int(hull[2][1])
+        if len(keypoints) > 0:
+            z, point = compute_z(depthFrame, (keypoints[0].pt[0], keypoints[0].pt[1]), keypoints[0].size/2)
+            # real = reachy.r_arm.forward_kinematics()
+            xmin = point[0]
+            ymin = point[1]
+            xmax = point[2]
+            ymax = point[3]
 
-                deltaX = int((xmax - xmin) * 0.1)
-                deltaY = int((ymax - ymin) * 0.1)
-                bbox = np.zeros(4)
-                bbox[0] = max(xmin + deltaX, 0)
-                bbox[1] = max(ymin + deltaY, 0)
-                bbox[2] = min(xmax - deltaX, depthFrame.shape[1])
-                bbox[3] = min(ymax - deltaY, depthFrame.shape[0])
+            deltaX = int((xmax - xmin) * 0.1)
+            deltaY = int((ymax - ymin) * 0.1)
+            bbox = np.zeros(4)
+            bbox[0] = max(xmin + deltaX, 0)
+            bbox[1] = max(ymin + deltaY, 0)
+            bbox[2] = min(xmax - deltaX, depthFrame.shape[1])
+            bbox[3] = min(ymax - deltaY, depthFrame.shape[0])
 
-                centroidX = int((bbox[2] - bbox[0]) / 2) + bbox[0]
-                centroidY = int((bbox[3] - bbox[1]) / 2) + bbox[1] 
+            centroidX = int((bbox[2] - bbox[0]) / 2) + bbox[0] 
+            # centroidX = centroidX - centroidX*0.0390625
+            centroidY = int((bbox[3] - bbox[1]) / 2) + bbox[1] 
 
-                midy = int(depthFrame.shape[0] / 2) 
-                midx = int(depthFrame.shape[1] / 2) 
+            midy = int(depthFrame.shape[0] / 2) 
+            midx = int((depthFrame.shape[1]) / 2) 
 
-                bb_x_pos = centroidX - midx
-                bb_y_pos = centroidY - midy  
+            bb_x_pos = centroidX - midx
+            bb_y_pos = centroidY - midy  
 
-                angle_x = calc_angle(bb_x_pos)
-                angle_y = calc_angle(bb_y_pos)  
+            angle_x = calc_angle(bb_x_pos, np.deg2rad(79.31), 1280)
+            angle_y = calc_angle(bb_y_pos, np.deg2rad(55.12), 800)
 
-                x = z*math.tan(angle_x)
-                y = -z*math.tan(angle_y)
+            x = z*math.tan(angle_x)
+            y = -z*math.tan(angle_y)
 
-                cv2.rectangle(depthFrameColor, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (255,0,0), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+            cv2.rectangle(depthFrameColor, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (255,0,0), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
 
-                fontType = cv2.FONT_HERSHEY_TRIPLEX
-                cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
-                
-                if p:
-                    print(f'x = {x}, y = {y}, z = {z}')
-
-                n = len(hull)
-                for j in range(0,n):
-                    cv2.line(depthFrameColor, tuple(hull[j]), tuple(hull[ (j+1) % n]), (0,255,0), 3)
+            fontType = cv2.FONT_HERSHEY_TRIPLEX
+            cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+            cv2.rectangle(bwFrame, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
             
-            if Start == True:
+            if p:
+                print(f'x = {x}, y = {y}, z = {z}')
+            
+            if Start == True: #and rec == True:
                 R = np.array([[0, np.sin(np.pi/4), np.cos(np.pi/4), 0.0825],
-                                [-1, 0, 0, -0.14],
+                                [-1, 0, 0, 0.105],
                                 [0, np.cos(np.pi/4), -np.sin(np.pi/4), -0.045],
                                 [0, 0, 0, 1]])
                 v = np.array([x/1000,
@@ -247,19 +262,21 @@ with dai.Device(pipeline) as device:    # Output queue will be used to get the d
                                 z/1000,
                                 1])[:,np.newaxis]
                 V = np.dot(R, v)
-                real = reachy.l_arm.forward_kinematics()
+                # real = reachy.r_arm.forward_kinematics()
                 f_estimation.write(f'{round(V[0][0],4)}, {round(V[1][0],4)}, {round(V[2][0],4)}\n')
-                print(real)
+                # print(real)
                 f_real.write(f'{round(real[0][3], 4)}, {round(real[1][3], 4)}, {round(real[2][3], 4)}\n')
-                print(V)
-                print(real)
+                Start = False
+                # print(V)
+                # print(real)
 
+        
         cv2.imshow("depth", depthFrameColor)
         cv2.imshow("bw", bwFrame)
         key = cv2.waitKey(1)
 
         if key == ord('q'):
-            reachy.turn_off_smoothly('l_arm')
+            reachy.turn_off_smoothly('r_arm')
             f_estimation.close()
             f_real.close()
             break
@@ -270,7 +287,7 @@ with dai.Device(pipeline) as device:    # Output queue will be used to get the d
             else :
                 Start = True
                 # t = move()
-                # t.Start()
+                # t.start()
         if key == ord('r'):
             print(reachy.joints)
 
@@ -307,37 +324,37 @@ with dai.Device(pipeline) as device:    # Output queue will be used to get the d
         # elif key == ord('z'):
         #     Z = z
         #     print(f'Z saved as: {Z}mm')
-        # elif key == ord('c'):
-        #     R = np.array([[0, np.sin(np.pi/4), np.cos(np.pi/4), 0.0825],
-        #                     [-1, 0, 0, -0.14],
-        #                     [0, np.cos(np.pi/4), -np.sin(np.pi/4), -0.045],
-        #                     [0, 0, 0, 1]])
-        #     v = np.array([x/1000,
-        #                     y/1000,
-        #                     Z/1000,
-        #                     1])[:,np.newaxis]
-        #     print(f"x:{x}mm, y:{y}mm, z:{Z}mm")  
-        #     V = np.dot(R, v)
-        #     print(f'coordinates in Reachy frame: {V}')
-        #     desired_pos = reachy.l_arm.forward_kinematics()
-        #     print(f'desired pos: {desired_pos}')
+        elif key == ord('c'):
+            R = np.array([[0, np.sin(np.pi/4), np.cos(np.pi/4), 0.0825],
+                            [-1, 0, 0, 0.105],
+                            [0, np.cos(np.pi/4), -np.sin(np.pi/4), -0.045],
+                            [0, 0, 0, 1]])
+            v = np.array([x/1000,
+                            y/1000,
+                            z/1000,
+                            1])[:,np.newaxis]
+            print(f"x:{x}mm, y:{y}mm, z:{z}mm")  
+            V = np.dot(R, v)
+            print(f'coordinates in Reachy frame: {V}')
+            desired_pos = reachy.r_arm.forward_kinematics()
+            print(f'desired pos: {desired_pos}')
 
-        # elif key == ord('g'):
-        #     A = desired_pos[:4,:3]
-        #     M = np.concatenate((A,V),axis=1)
-        #     print(f'4x4 target pose: {M}')
-        #     joint_pos = reachy.l_arm.inverse_kinematics(M)
-        #     print(f'joint pos: {joint_pos}')
-        #     print(f'theoric forward kinematics: {reachy.l_arm.forward_kinematics(joint_pos)} ')
-        #     reachy.turn_on('l_arm')
-        #     goto({reachy.l_arm.l_gripper: 50}, duration=0.5)
-        #     goto({joint: pos for joint,pos in zip(reachy.l_arm.joints.values(), joint_pos)}, duration=1.0)
-        #     time.sleep(1.1)
-        #     goto({reachy.l_arm.l_gripper: 30}, duration=0.5)
-        #     print(f'real pos: {reachy.l_arm.forward_kinematics()}')
+        elif key == ord('g'):
+            A = desired_pos[:4,:3]
+            M = np.concatenate((A,V),axis=1)
+            print(f'4x4 target pose: {M}')
+            joint_pos = reachy.r_arm.inverse_kinematics(M)
+            print(f'joint pos: {joint_pos}')
+            print(f'theoric forward kinematics: {reachy.r_arm.forward_kinematics(joint_pos)} ')
+            reachy.turn_on('r_arm')
+            goto({reachy.r_arm.l_gripper: 50}, duration=0.5)
+            goto({joint: pos for joint,pos in zip(reachy.r_arm.joints.values(), joint_pos)}, duration=1.0)
+            time.sleep(1.1)
+            goto({reachy.r_arm.l_gripper: 30}, duration=0.5)
+            print(f'real pos: {reachy.r_arm.forward_kinematics()}')
 
         # elif key == ord('o'):
-        #     reachy.turn_off_smoothly('l_arm')
+        #     reachy.turn_off_smoothly('r_arm')
 
         # elif key == ord('p'):
         #     R = np.array([[0, np.sin(np.pi/4), np.cos(np.pi/4), 0.0825],
@@ -349,13 +366,13 @@ with dai.Device(pipeline) as device:    # Output queue will be used to get the d
         #                     z/1000,
         #                     1])[:,np.newaxis]
         #     print(f"x:{x}mm, y:{y}mm, z:{z}mm")  
-        #     a = reachy.l_arm.forward_kinematics()[:4,:3]
+        #     a = reachy.r_arm.forward_kinematics()[:4,:3]
         #     v = np.concatenate((a,v),axis=1)
         #     v = np.dot(R, v)
         #     print(f'coordinates in Reachy frame:\n {v}')
-        #     v = reachy.l_arm.inverse_kinematics(v)
+        #     v = reachy.r_arm.inverse_kinematics(v)
         #     print(f'inverse_kinematics of coordinates in Reachy frame:\n {v}')
-        #     v = reachy.l_arm.forward_kinematics(v)
+        #     v = reachy.r_arm.forward_kinematics(v)
         #     print(f'forward_kinematics of coordinates in Reachy frame:\n {v}')
 
 
