@@ -3,12 +3,16 @@ import numpy as np
 import depthai as dai
 import threading
 import time
+import math
 
 class BlobDetection (threading.Thread):
-    def __init__(self, depth=None, min_thresh=0, max_thresh=255, area=False, min_area=None, max_area=None,
+    def __init__(self, name = None, depth=None, min_thresh=0, max_thresh=255, area=False, min_area=None, max_area=None,
                  circularity=False, min_circ=None, max_circ=None, convexity=False, min_conv=None,
-                 max_conv=None, Inertia=False, min_in=None, max_in=None ):
+                 max_conv=None, Inertia=False, min_in=None, max_in=None, hfov=79.31, vfov=55.12):
         threading.Thread.__init__(self)
+
+        if name is not None: self.name = name
+
         params = cv2.SimpleBlobDetector_Params()
 
         params.minThreshold = min_thresh
@@ -37,18 +41,86 @@ class BlobDetection (threading.Thread):
         self.detector = cv2.SimpleBlobDetector_create(params)
         self.pos = {'im': {'x': None, 'y': None, 'x': None}, 
                     'robot': {'x': None, 'y': None, 'x': None}}
+        self.roi = {'xmin': None, 'ymin': None, 'xmax': None, 'ymax': None}
         self.keypoints = None
         self.Terminated = False
+
+        self.hfov = hfov
+        self.vfov = vfov
         
     def run(self):
         # global bwFrame
         while not self.Terminated:
             if self.depth.bwFrame is not None:
                 self.keypoints = self.detector.detect(self.depth.bwFrame)
+                if len(self.keypoints) > 0:
+                    self.define_roi((self.keypoints[0].pt[0], self.keypoints[0].pt[1]), self.keypoints[0].size/2)
+                    self.compute_pos_in_frame()
+                    self.compute_pos_in_robot_frame()
+            else:
+                self.keypoints = None
             time.sleep(0.01)
     
     def stop(self):
         self.Terminated = True
+
+    def define_roi(self, center, r):
+        self.roi['xmin'] = int(center[0] - r - 10)
+        self.roi['ymin'] = int(center[1] - r - 10)
+        self.roi['xmax'] = int(center[0] + r + 10)
+        self.roi['ymax'] = int(center[1] + r + 10)
+
+    def calc_angle(self, offset, fov, size):
+        return math.atan(math.tan( fov/ 2.0) * offset / (size / 2.0))
+    
+    def compute_pos_in_frame(self):
+        depthFrame = self.depth.depthFrame
+        # Compute Z
+        roi = depthFrame[self.roi['ymin']:self.roi['ymax'], self.roi['xmin']:self.roi['xmax']]
+        flatRoi = roi.flatten()
+        result = list(filter(lambda val: val !=  0, list(flatRoi)))
+        z = np.median(np.array(result))
+
+        # Compute X and Y
+        deltaX = int((self.roi['xmax'] - self.roi['xmin'] ) * 0.1)
+        deltaY = int((self.roi['ymax'] - self.roi['ymin'] ) * 0.1)
+        bbox = np.zeros(4)
+        bbox[0] = max(self.roi['xmin'] + deltaX, 0)
+        bbox[1] = max(self.roi['ymin'] + deltaY, 0)
+        bbox[2] = min(self.roi['xmax'] - deltaX, depthFrame.shape[1])
+        bbox[3] = min(self.roi['ymax'] - deltaY, depthFrame.shape[0])
+
+        centroidX = int((bbox[2] - bbox[0]) / 2) + bbox[0] #- 40
+        centroidY = int((bbox[3] - bbox[1]) / 2) + bbox[1]
+
+        midx = int(depthFrame.shape[1] / 2)
+        midy = int(depthFrame.shape[0] / 2) 
+
+        bb_x_pos = centroidX - midx
+        bb_y_pos = centroidY - midy  
+
+        angle_x = self.calc_angle(bb_x_pos, np.deg2rad(self.hfov), depthFrame.shape[1])
+        angle_y = self.calc_angle(bb_y_pos, np.deg2rad(self.vfov), depthFrame.shape[0])
+
+        self.pos['im']['x'] = z*math.tan(angle_x)
+        self.pos['im']['y'] = -z*math.tan(angle_y)
+        self.pos['im']['z'] = z
+
+    def compute_pos_in_robot_frame(self):
+        R = np.array([[0, np.sin(np.pi/4), np.cos(np.pi/4), 0.0825],
+                                [-1, 0, 0, 0.105],
+                                [0, np.cos(np.pi/4), -np.sin(np.pi/4), -0.045],
+                                [0, 0, 0, 1]])
+        v = np.array([self.pos['im']['x']/1000,
+                        self.pos['im']['y']/1000,
+                        self.pos['im']['z']/1000,
+                        1])[:,np.newaxis]
+        V = np.dot(R, v)                 
+        self.pos['robot']['x'] = round(V[0][0],4)
+        self.pos['robot']['y'] = round(V[1][0],4)
+        self.pos['robot']['z'] = round(V[2][0],4)
+        print(self.name + ': ' + str(self.pos['robot']))
+       
 
 
 class DepthComputation (threading.Thread):
@@ -135,20 +207,28 @@ class DepthComputation (threading.Thread):
 depth_comput = DepthComputation()
 depth_comput.start()
 
-gripper_detection = BlobDetection(depth=depth_comput, min_thresh=20, max_thresh=150, area=True, min_area=120, max_area=400,
+gripper_detection = BlobDetection(name='gripper', depth=depth_comput, min_thresh=20, max_thresh=150, area=True, min_area=120, max_area=400,
                 circularity=True, min_circ=0.5, convexity=True, min_conv=0.87,
                 Inertia=True, min_in=0.2)
 gripper_detection.start()
 
-target_detection = BlobDetection(depth=depth_comput, min_thresh=20, max_thresh=150, area=True, min_area=800, max_area=3000,
+target_detection = BlobDetection(name='target', depth=depth_comput, min_thresh=20, max_thresh=150, area=True, min_area=800, max_area=3000,
                 circularity=True, min_circ=0.65, max_circ=0.785)
 target_detection.start()
+
+blob_threads = [gripper_detection, target_detection]
 
 while True:
 
     if depth_comput.depthFrameColor is not None:
-        im_with_keypoints = cv2.drawKeypoints(depth_comput.depthFrameColor, gripper_detection.keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-        im_with_keypoints = cv2.drawKeypoints(im_with_keypoints, target_detection.keypoints, np.array([]), (255,0,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+        im_with_keypoints = depth_comput.depthFrameColor
+        # im_with_keypoints = cv2.drawKeypoints(depth_comput.depthFrameColor, gripper_detection.keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+        # im_with_keypoints = cv2.drawKeypoints(im_with_keypoints, target_detection.keypoints, np.array([]), (255,0,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+
+        for thread in blob_threads:
+            if thread.roi['ymax'] is not None:
+                cv2.rectangle(im_with_keypoints, (thread.roi['xmin'], thread.roi['ymin']), (thread.roi['xmax'], thread.roi['ymax']), (255,0,0), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+        
         cv2.imshow("Keypoints", im_with_keypoints)
     key = cv2.waitKey(1)
     if key == ord('q'):
