@@ -4,6 +4,11 @@ import depthai as dai
 import threading
 import time
 import math
+import copy
+from reachy_sdk import ReachySDK
+from reachy_sdk.trajectory import goto
+from reachy_sdk.trajectory.interpolation import InterpolationMode
+from scipy.spatial.transform import Rotation as R
 
 class BlobDetection (threading.Thread):
     def __init__(self, name = None, depth=None, min_thresh=0, max_thresh=255, area=False, min_area=None, max_area=None,
@@ -119,7 +124,6 @@ class BlobDetection (threading.Thread):
         self.pos['robot']['x'] = round(V[0][0],4)
         self.pos['robot']['y'] = round(V[1][0],4)
         self.pos['robot']['z'] = round(V[2][0],4)
-        print(self.name + ': ' + str(self.pos['robot']))
        
 
 
@@ -204,6 +208,69 @@ class DepthComputation (threading.Thread):
         self.Terminated = True
 
 
+class ReachyControl (threading.Thread):
+    def __init__(self, g, t):
+        threading.Thread.__init__(self)
+        self.g = g
+        self.t = t
+        self.key = None
+        self.reachy = ReachySDK(host='localhost')
+        self.Terminated = False
+  
+        self.ref = None
+        self.Start = False
+
+    def run (self):
+        while not self.Terminated:
+
+            if self.Start:
+                if self.ref is None:
+                    self.ref = copy.deepcopy(self.g.pos['robot'])
+                if self.compare_to_ref():
+                    r = self.compute_rotation()
+                    c = self.reachy.r_arm.forward_kinematics()
+                    c[:3,:3]=r
+                    joint_pos = self.reachy.r_arm.inverse_kinematics(c)
+                    print(joint_pos)
+                    self.reachy.turn_on('r_arm')
+                    goto({joint: pos for joint,pos in zip(self.reachy.r_arm.joints.values(), joint_pos)}, duration=0.25)
+                time.sleep(0.25)
+         
+            if self.key == ord('s'):
+                if self.Start == True:
+                    self.Start = False
+                else:
+                    self.Start = True
+
+    def compare_to_ref(self):
+        current = self.g.pos['robot']
+        if abs(current['x']-self.ref['x']) < 0.05 and abs(current['y']-self.ref['y']) < 0.05 and abs(current['z']-self.ref['z']) < 0.05 :
+            self.ref = copy.deepcopy(current)
+            return True
+        return False
+
+    def stop(self):
+        self.Terminated = True
+
+
+    def compute_rotation(self):
+        # print(t.pos['robot'])
+        # print(g.pos['robot'])
+        dx = self.t.pos['robot']['x']-self.g.pos['robot']['x']
+        dy = self.t.pos['robot']['y']-self.g.pos['robot']['y']
+        theta = np.arctan(dy/dx)
+        if dx<0 and dy>0:
+            theta = np.pi + theta
+        elif dx<0 and dy<0:
+            theta = theta - np.pi 
+        print(np.rad2deg(theta))
+        R1 = R.from_euler('y', np.deg2rad(-90))
+        R2 = R.from_euler('x', theta)
+        r = R1 * R2
+        return r.as_matrix()
+
+
+
 depth_comput = DepthComputation()
 depth_comput.start()
 
@@ -216,7 +283,11 @@ target_detection = BlobDetection(name='target', depth=depth_comput, min_thresh=2
                 circularity=True, min_circ=0.65, max_circ=0.785)
 target_detection.start()
 
+reachy_control = ReachyControl(gripper_detection, target_detection)
+reachy_control.start()
+
 blob_threads = [gripper_detection, target_detection]
+
 
 while True:
 
@@ -230,11 +301,14 @@ while True:
                 cv2.rectangle(im_with_keypoints, (thread.roi['xmin'], thread.roi['ymin']), (thread.roi['xmax'], thread.roi['ymax']), (255,0,0), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
         
         cv2.imshow("Keypoints", im_with_keypoints)
-    key = cv2.waitKey(1)
-    if key == ord('q'):
+    reachy_control.key = cv2.waitKey(1)
+
+    if reachy_control.key == ord('q'):
+        reachy_control.reachy.turn_off_smoothly('r_arm')
+        reachy_control.stop()
         gripper_detection.stop()
         target_detection.stop()
         depth_comput.stop()
         break
 
-
+   
