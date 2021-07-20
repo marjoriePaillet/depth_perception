@@ -2,18 +2,11 @@ import cv2
 import depthai as dai
 import numpy as np
 import math
-import matplotlib.pyplot as plt
 import threading
-import matplotlib.animation as animation
 from reachy_sdk import ReachySDK
 from reachy_sdk.trajectory import goto
-from reachy_sdk.trajectory.interpolation import InterpolationMode
 import time
-from reachy_sdk import ReachySDK
-from reachy_sdk.trajectory import goto
-from reachy_sdk.trajectory.interpolation import InterpolationMode
-from scipy.spatial.transform import Rotation as Rot
-import pyzbar.pyzbar as pyzbar
+
 
 # reachy = ReachySDK(host='localhost')
 stepSize = 0.005
