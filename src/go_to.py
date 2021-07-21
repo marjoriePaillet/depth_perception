@@ -256,7 +256,9 @@ class ReachyControl (threading.Thread):
         kpx = 0.5
         kpy = 0.5
         kpz = 1.5
-
+        first = True
+        self.reachy.turn_on('r_arm')
+        goto({self.reachy.r_arm.r_gripper: -60}, duration=1)
         while not self.Terminated:
             if self.Start:
                 if self.compare_to_ref():
@@ -281,6 +283,10 @@ class ReachyControl (threading.Thread):
                              duration=1,
                              interpolation_mode=InterpolationMode.MINIMUM_JERK)
                         # time.sleep(1)
+                    elif first:
+                        print('first')
+                        goto({self.reachy.r_arm.r_gripper: -15}, duration=0.5)
+                        first = False
 
             if self.key == ord('s'):
                 if self.Start:
