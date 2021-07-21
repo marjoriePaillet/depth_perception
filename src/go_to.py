@@ -1,23 +1,32 @@
+"""Code to perform depth coomputation and cup grabbing."""
+
 import cv2
-import numpy as np
-import depthai as dai
-import threading
 import time
 import math
+import threading
+import numpy as np
+
+import depthai as dai
+
 from reachy_sdk import ReachySDK
 from reachy_sdk.trajectory import goto
 from reachy_sdk.trajectory.interpolation import InterpolationMode
+
 from scipy.spatial.transform import Rotation as R
 
 
 class BlobDetection(threading.Thread):
+    """Handle the blob detection and 3D positions computation in
+    camera frame and Reachy frame according to passed arguments."""
+
     def __init__(self, name=None, depth=None, min_thresh=0, max_thresh=255,
                  area=False, min_area=None, max_area=None,
                  circularity=False, min_circ=None, max_circ=None,
                  convexity=False, min_conv=None,
                  max_conv=None, Inertia=False, min_in=None, max_in=None,
                  hfov=79.31, vfov=55.12):
-
+        """Set up blob detector algorithm parametters
+        and attributes needed for 3D positions computation."""
         threading.Thread.__init__(self)
 
         if name is not None:
@@ -69,6 +78,9 @@ class BlobDetection(threading.Thread):
         self.Terminated = False
 
     def run(self):
+        """Find blob in frame according to parameters,
+        define Roi and compute 3D position in camera frame, then in Reachy frame."""
+
         while not self.Terminated:
             if self.depth.bwFrame is not None:
                 self.keypoints = self.detector.detect(self.depth.bwFrame)
@@ -83,18 +95,34 @@ class BlobDetection(threading.Thread):
             time.sleep(0.02)
 
     def stop(self):
+        """Allow to kill the main loop"""
         self.Terminated = True
 
     def define_roi(self, center, r):
+        """Define Roi as a rectangle circumscribed by a circle.
+
+        Args:
+            center: tuple (x,y) refering to the centre of a circle
+            r: radius of a circle
+        """
         self.roi['xmin'] = int(center[0] - r - 10)
         self.roi['ymin'] = int(center[1] - r - 10)
         self.roi['xmax'] = int(center[0] + r + 10)
         self.roi['ymax'] = int(center[1] + r + 10)
 
     def calc_angle(self, offset, fov, size):
+        """Compute angle needed to calculate 3D position.
+
+        Args:
+            offset: distance in pixel between ROI centroid and image center along x or y axis.
+            fov: horizontal or vertical field of vue depending on axis (x or y) in radian
+            size: horizontal or vertical image size depending on axis (x or y) in pixel
+        """
         return math.atan(math.tan(fov / 2.0) * offset / (size / 2.0))
 
     def compute_pos_in_camera_frame(self):
+        """Compute 3D position in camera frame of an object in ROI."""
+
         depthFrame = self.depth.depthFrame
         # Compute Z
         roi = depthFrame[self.roi['ymin']:self.roi['ymax'],
@@ -129,6 +157,7 @@ class BlobDetection(threading.Thread):
         self.pos['im']['z'] = z
 
     def compute_pos_in_robot_frame(self):
+        """Convert 3D position of an object in ROI from camera frame to Reachy frame."""
         R = np.array([[0, np.sin((3*np.pi)/8), np.cos((3*np.pi)/8), 0.08+0.065*np.sin((np.pi/8)+0.1526)-0.02],
                       [-1, 0, 0, 0.038],
                       [0, np.cos((3*np.pi)/8), -np.sin((3*np.pi)/8), 0.13-0.065*np.cos((np.pi/8)+0.1526)],
@@ -144,7 +173,10 @@ class BlobDetection(threading.Thread):
 
 
 class DepthComputation (threading.Thread):
+    """Handle depth map computation from stereo cameras."""
+
     def __init__(self):
+        """Set-up depthAi pipeline"""
         threading.Thread.__init__(self)
         self.pipeline = dai.Pipeline()
 
@@ -183,6 +215,7 @@ class DepthComputation (threading.Thread):
         self.Terminated = False
 
     def run(self):
+        """Save curent depth map and black and white frame"""
         with dai.Device(self.pipeline) as device:
             depthQueue = device.getOutputQueue(name="depth", maxSize=4,
                                                blocking=False)
@@ -202,11 +235,14 @@ class DepthComputation (threading.Thread):
                                                          cv2.COLORMAP_HOT)
 
     def stop(self):
+        """Allow to kill the main loop"""
         self.Terminated = True
 
 
 class ReachyControl (threading.Thread):
+    """Handle Reachy motions to reach an object detected by blob detection."""
     def __init__(self, g, t):
+        """Set up Reachy"""
         threading.Thread.__init__(self)
         self.g = g
         self.t = t
@@ -216,6 +252,7 @@ class ReachyControl (threading.Thread):
         self.Start = False
 
     def run(self):
+        """Main loop minimizing the distance between gripper and target position in reachy frame"""
         kpx = 0.5
         kpy = 0.5
         kpz = 1.5
@@ -252,6 +289,7 @@ class ReachyControl (threading.Thread):
                     self.Start = True
 
     def compare_to_ref(self):
+        """Test if the gripper position estimation is not so far from the real position."""
         current = self.g.pos['robot']
         reachy = self.reachy.r_arm.forward_kinematics()
         if abs(current['x']-reachy[0][3]) < 0.08 and abs(current['y']-reachy[1][3]) < 0.08:
@@ -259,9 +297,11 @@ class ReachyControl (threading.Thread):
         return False
 
     def stop(self):
+        """Allow to kill the main loop."""
         self.Terminated = True
 
     def compute_rotation(self):
+        """Compute the gripper rotation matrix depending on target position"""
         dx = self.t.pos['robot']['x']-self.g.pos['robot']['x']
         dy = self.t.pos['robot']['y']-self.g.pos['robot']['y']
         theta = np.arctan(dy/dx)
@@ -276,6 +316,7 @@ class ReachyControl (threading.Thread):
 
 
 def main():
+    """Main function launching threads and displaying the depth map with current ROI."""
     depth_comput = DepthComputation()
     depth_comput.start()
 
