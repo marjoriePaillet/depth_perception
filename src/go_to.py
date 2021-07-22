@@ -256,37 +256,72 @@ class ReachyControl (threading.Thread):
         kpx = 0.5
         kpy = 0.5
         kpz = 1.5
-        first = True
+        kiz = 0.6
+        serr = 0
         self.reachy.turn_on('r_arm')
         goto({self.reachy.r_arm.r_gripper: -60}, duration=1)
         while not self.Terminated:
             if self.Start:
                 if self.compare_to_ref():
+
                     err = [self.t.pos['robot']['x'] - self.g.pos['robot']['x'],
                            self.t.pos['robot']['y'] - self.g.pos['robot']['y'],
-                           self.t.pos['robot']['z'] + 0.03 - self.g.pos['robot']['z']]
+                           self.t.pos['robot']['z'] - self.g.pos['robot']['z']]
+                    serr += err[2]
+                    serr = min(serr, 0.15)
+                    serr = max(serr, -0.15)
                     ro = np.sqrt(err[0]**2 + err[1]**2)
-                    if ro > 0.06:
+
+                    if ro > 0.06 or abs(err[2]) > 0.02:
                         rot = self.compute_rotation()
                         c = self.reachy.r_arm.forward_kinematics()
                         orientation = np.zeros((4, 3))
                         orientation[:3, :3] = rot
 
-                        M = np.concatenate((orientation, [[c[0][3]+kpx*err[0]],
-                                            [c[1][3]+kpy*err[1]],
-                                            [c[2][3]+kpz*err[2]],
-                                            [1]]), axis=1)
+                        z = kpz*err[2] + kiz*serr
 
+                        # if err[0] < 0.02:
+                        #     print('x petit')
+                        #     M = np.concatenate((orientation, [[c[0][3]+kpx*err[0] - 0.12],
+                        #                     [c[1][3]+kpy*err[1] - 0.1],
+                        #                     [c[2][3]+z],
+                        #                     [1]]), axis=1)
+                        if err[1] < 0 or err[0] < 0:
+                            M = c
+                            M[0][3] += (kpx*err[0] - 0.1)
+                            M[1][3] += (kpy*err[1] - 0.1)
+                            M[2][3] += z
+
+                        else:
+                            M = np.concatenate((orientation, [[c[0][3]+kpx*err[0]],
+                                                [c[1][3]+kpy*err[1]],
+                                                [c[2][3]+z],
+                                                [1]]), axis=1)
+
+                        M[0][3] = max(M[0][3], 0.1)
+                        M[0][3] = min(M[0][3], 0.44)
+
+                        M[1][3] = min(M[1][3], 0.15)
+                        M[1][3] = max(M[1][3], -0.206*M[0][3] - 0.109)
+
+                        M[2][3] = max(M[2][3], -0.35)
+                        M[2][3] = min(M[2][3], -0.2)
+
+                        print(M)
+                        print('z= '+str(M[2][3]))
+                        print('serr =' + str(serr))
                         joints_pos = self.reachy.r_arm.inverse_kinematics(M)
-                        self.reachy.turn_on('r_arm')
                         goto({joint: pos for joint, pos in zip(self.reachy.r_arm.joints.values(), joints_pos)},
                              duration=1,
                              interpolation_mode=InterpolationMode.MINIMUM_JERK)
-                        # time.sleep(1)
-                    elif first:
+                        time.sleep(1)
+                    else:
                         print('first')
                         goto({self.reachy.r_arm.r_gripper: -15}, duration=0.5)
-                        first = False
+                        serr = 0
+                        self.Start = False
+                        time.sleep(1)
+                        goto({self.reachy.r_arm.r_gripper: -60}, duration=1)
 
             if self.key == ord('s'):
                 if self.Start:
@@ -310,7 +345,7 @@ class ReachyControl (threading.Thread):
         """Compute the gripper rotation matrix depending on target position"""
         dx = self.t.pos['robot']['x']-self.g.pos['robot']['x']
         dy = self.t.pos['robot']['y']-self.g.pos['robot']['y']
-        theta = np.arctan(dy/dx)
+        theta = np.arctan(dy/dx) + np.deg2rad(15)
         if dx < 0 and dy > 0:
             theta = np.pi + theta
         elif dx < 0 and dy < 0:
