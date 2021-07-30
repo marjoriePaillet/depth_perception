@@ -3,6 +3,7 @@
 import cv2
 import time
 import math
+import copy
 import threading
 import numpy as np
 
@@ -38,11 +39,12 @@ class BlobDetection(threading.Thread):
         params.maxThreshold = max_thresh
 
         if area:
+            # default area value if for a frame of shape 800*1280, for 400*640 frames devided area by four
             params.filterByArea = True
             if min_area is not None:
-                params.minArea = min_area
+                params.minArea = min_area/4
             if max_area is not None:
-                params.maxArea = max_area
+                params.maxArea = max_area/4
         if circularity:
             params.filterByCircularity = True
             if min_circ is not None:
@@ -192,9 +194,9 @@ class DepthComputation (threading.Thread):
         xoutBw.setStreamName("bw")
 
         # Properties
-        monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
+        monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
         monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
-        monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
+        monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
         monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
         stereo.setConfidenceThreshold(250)
 
@@ -251,22 +253,28 @@ class ReachyControl (threading.Thread):
         self.Terminated = False
         self.Start = False
 
+        self.theta_prec = 0
+        self.theta = 0
+
     def run(self):
         """Main loop minimizing the distance between gripper and target position in reachy frame"""
         kpx = 0.5
         kpy = 0.5
-        kpz = 1.5
-        kiz = 0.6
+        kpz = 0.7
+        kiz = 0.2
         serr = 0
+
         self.reachy.turn_on('r_arm')
+        first = True
         goto({self.reachy.r_arm.r_gripper: -60}, duration=1)
+
         while not self.Terminated:
             if self.Start:
                 if self.compare_to_ref():
-
                     err = [self.t.pos['robot']['x'] - self.g.pos['robot']['x'],
                            self.t.pos['robot']['y'] - self.g.pos['robot']['y'],
                            self.t.pos['robot']['z'] - self.g.pos['robot']['z']]
+
                     serr += err[2]
                     serr = min(serr, 0.15)
                     serr = max(serr, -0.15)
@@ -280,16 +288,10 @@ class ReachyControl (threading.Thread):
 
                         z = kpz*err[2] + kiz*serr
 
-                        # if err[0] < 0.02:
-                        #     print('x petit')
-                        #     M = np.concatenate((orientation, [[c[0][3]+kpx*err[0] - 0.12],
-                        #                     [c[1][3]+kpy*err[1] - 0.1],
-                        #                     [c[2][3]+z],
-                        #                     [1]]), axis=1)
-                        if err[1] < 0 or err[0] < 0:
-                            M = c
-                            M[0][3] += (kpx*err[0] - 0.1)
-                            M[1][3] += (kpy*err[1] - 0.1)
+                        if err[1] < 0.01 or err[0] < 0.01:
+                            M = copy.deepcopy(c)
+                            M[0][3] += (kpx*(err[0]) - 0.1)  # (kpx*(err[0] - 0.2))
+                            M[1][3] += (kpx*(err[1]) - 0.1)  # (kpy*(err[1] - 0.2))
                             M[2][3] += z
 
                         else:
@@ -307,16 +309,34 @@ class ReachyControl (threading.Thread):
                         M[2][3] = max(M[2][3], -0.35)
                         M[2][3] = min(M[2][3], -0.2)
 
-                        print(M)
-                        print('z= '+str(M[2][3]))
-                        print('serr =' + str(serr))
+                        d = np.sqrt((M[0][3]-c[0][3])**2 + (M[1][3]-c[1][3])**2 + (M[2][3]-c[2][3])**2)
+
                         joints_pos = self.reachy.r_arm.inverse_kinematics(M)
-                        goto({joint: pos for joint, pos in zip(self.reachy.r_arm.joints.values(), joints_pos)},
-                             duration=1,
-                             interpolation_mode=InterpolationMode.MINIMUM_JERK)
-                        time.sleep(1)
+
+                        starting_pos = {}
+                        for it in self.reachy.r_arm.joints.items():
+                            if it[0] != 'r_gripper':
+                                starting_pos[it[1]] = it[1].goal_position
+
+                        t = 7.27*d-0.09
+                        t = max(t, 0.2)
+                        t = min(t, 1)
+
+                        if (np.rad2deg(abs(self.theta_prec-self.theta)) > 5):
+                            t = max(t, 0.75)
+
+                        if first:
+                            first = False
+                            goto({joint: pos for joint, pos in zip(self.reachy.r_arm.joints.values(), joints_pos)},
+                                 duration=t,
+                                 interpolation_mode=InterpolationMode.LINEAR)
+                        else:
+                            goto({joint: pos for joint, pos in zip(self.reachy.r_arm.joints.values(), joints_pos)},
+                                 duration=t,
+                                 starting_positions=starting_pos,
+                                 interpolation_mode=InterpolationMode.LINEAR)
+
                     else:
-                        print('first')
                         goto({self.reachy.r_arm.r_gripper: -15}, duration=0.5)
                         serr = 0
                         self.Start = False
@@ -339,17 +359,23 @@ class ReachyControl (threading.Thread):
 
     def stop(self):
         """Allow to kill the main loop."""
+
         self.Terminated = True
 
     def compute_rotation(self):
         """Compute the gripper rotation matrix depending on target position"""
         dx = self.t.pos['robot']['x']-self.g.pos['robot']['x']
         dy = self.t.pos['robot']['y']-self.g.pos['robot']['y']
-        theta = np.arctan(dy/dx) + np.deg2rad(15)
+        theta = np.arctan(dy/dx)
+        theta += np.deg2rad(15)
         if dx < 0 and dy > 0:
             theta = np.pi + theta
         elif dx < 0 and dy < 0:
             theta = theta - np.pi
+
+        self.theta_prec = self.theta
+        self.theta = theta
+
         R1 = R.from_euler('y', np.deg2rad(-90))
         R2 = R.from_euler('x', theta)
         r = R1 * R2
@@ -380,9 +406,7 @@ def main():
     reachy_control.start()
 
     blob_threads = [gripper_detection, target_detection]
-
     while True:
-
         if depth_comput.depthFrameColor is not None:
             im_with_keypoints = depth_comput.depthFrameColor
 
