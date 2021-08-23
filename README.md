@@ -25,6 +25,7 @@ FOV values can be changed in BlobDetection() objects declaration.
 
 In order to make possible the opencv blob detection with current parameters put a black 2cm circle of paper on Reachy's gripper, 
 and a black 3.5cm square of paper on on the targeted objet as shown in the following picture.
+
 ![alt text](https://github.com/marjoriePaillet/depth_perception/blob/master/images/Reachy_setup.jpg)
 
 Pieces of paper must stay visible by cameras.
