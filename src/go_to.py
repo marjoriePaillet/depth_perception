@@ -256,6 +256,8 @@ class ReachyControl (threading.Thread):
         self.theta_prec = 0
         self.theta = 0
 
+        self.time = 0
+
     def run(self):
         """Main loop minimizing the distance between gripper and target position in reachy frame"""
         kpx = 0.5
@@ -270,14 +272,15 @@ class ReachyControl (threading.Thread):
 
         while not self.Terminated:
             if self.Start:
+                if self.time == 0:
+                    self.time = time.time()
                 if self.compare_to_ref():
                     err = [self.t.pos['robot']['x'] - self.g.pos['robot']['x'],
                            self.t.pos['robot']['y'] - self.g.pos['robot']['y'],
                            self.t.pos['robot']['z'] - self.g.pos['robot']['z']]
-
                     serr += err[2]
-                    serr = min(serr, 0.15)
-                    serr = max(serr, -0.15)
+                    serr = min(serr, 0.2)
+                    serr = max(serr, -0.2)
                     ro = np.sqrt(err[0]**2 + err[1]**2)
 
                     if ro > 0.06 or abs(err[2]) > 0.02:
@@ -287,8 +290,7 @@ class ReachyControl (threading.Thread):
                         orientation[:3, :3] = rot
 
                         z = kpz*err[2] + kiz*serr
-
-                        if err[1] < 0.01 or err[0] < 0.01:
+                        if err[1] < -0.01 or err[0] < 0.02:
                             M = copy.deepcopy(c)
                             M[0][3] += (kpx*(err[0]) - 0.1)  # (kpx*(err[0] - 0.2))
                             M[1][3] += (kpx*(err[1]) - 0.1)  # (kpy*(err[1] - 0.2))
@@ -337,6 +339,10 @@ class ReachyControl (threading.Thread):
                                  interpolation_mode=InterpolationMode.LINEAR)
 
                     else:
+                        if self.time != 0:
+                            print('duration = ' + str(time.time() - self.time))
+                            self.time = 0
+
                         goto({self.reachy.r_arm.r_gripper: -15}, duration=0.5)
                         serr = 0
                         self.Start = False
