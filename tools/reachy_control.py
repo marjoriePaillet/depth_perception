@@ -1,3 +1,5 @@
+""" Firts tests of Reachy control with depthAi informations"""
+
 import cv2
 import depthai as dai
 import numpy as np
